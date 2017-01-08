@@ -5,7 +5,8 @@
  *  Redistribution and use in source and binary forms, with or without
  *  modification, are permitted provided that the following conditions are met:
  *
- *  * Redistributions of source code must retain the above copyright notice, this
+ *  * Redistributions of source code must retain the above copyright notice,
+ * this
  *    list of conditions and the following disclaimer.
  *
  *  * Redistributions in binary form must reproduce the above copyright notice,
@@ -18,13 +19,16 @@
  *
  *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE
  *  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
  *  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
  *  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- *  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY,
+ *  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+ * USE
  *  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
@@ -34,22 +38,24 @@
  Yuki KITSUKAWA
  */
 
+#include <chrono>
+#include <fstream>
 #include <iostream>
 #include <sstream>
-#include <fstream>
 #include <string>
-#include <chrono>
+
+#include <pthread.h>
 
 #include <ros/ros.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/Float32.h>
 #include <std_msgs/String.h>
-#include <std_msgs/Bool.h>
-#include <sensor_msgs/PointCloud2.h>
 #include <velodyne_pointcloud/point_types.h>
 #include <velodyne_pointcloud/rawdata.h>
 
-#include <geometry_msgs/TwistStamped.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <geometry_msgs/TwistStamped.h>
 
 #include <tf/tf.h>
 #include <tf/transform_broadcaster.h>
@@ -190,7 +196,11 @@ static std::string filename;
 // static tf::TransformListener local_transform_listener;
 static tf::StampedTransform local_transform;
 
-static void param_callback(const runtime_manager::ConfigNdt::ConstPtr& input)
+static int points_map_num = 0;
+
+pthread_mutex_t mutex;
+
+static void param_callback(const runtime_manager::ConfigNdt::ConstPtr &input)
 {
   if (_use_gnss != input->init_pos_gnss)
   {
@@ -278,10 +288,14 @@ static void param_callback(const runtime_manager::ConfigNdt::ConstPtr& input)
   }
 }
 
-static void map_callback(const sensor_msgs::PointCloud2::ConstPtr& input)
+static void map_callback(const sensor_msgs::PointCloud2::ConstPtr &input)
 {
-  if (map_loaded == 0)
+  //  if (map_loaded == 0)
+  if (points_map_num != input->width)
   {
+    std::cout << "Update points_map." << std::endl;
+
+    points_map_num = input->width;
     // Convert the data type(from sensor_msgs to pcl).
     pcl::fromROSMsg(*input, map);
 
@@ -294,7 +308,7 @@ static void map_callback(const sensor_msgs::PointCloud2::ConstPtr& input)
         local_transform_listener.waitForTransform("/map", "/world", now, ros::Duration(10.0));
         local_transform_listener.lookupTransform("/map", "world", now, local_transform);
       }
-      catch (tf::TransformException& ex)
+      catch (tf::TransformException &ex)
       {
         ROS_ERROR("%s", ex.what());
       }
@@ -303,20 +317,23 @@ static void map_callback(const sensor_msgs::PointCloud2::ConstPtr& input)
     }
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr map_ptr(new pcl::PointCloud<pcl::PointXYZ>(map));
+    pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> new_ndt_instance;
     // Setting point cloud to be aligned to.
-    ndt.setInputTarget(map_ptr);
+    new_ndt_instance.setInputTarget(map_ptr);
 
     // Setting NDT parameters to default values
-    ndt.setMaximumIterations(iter);
-    ndt.setResolution(ndt_res);
-    ndt.setStepSize(step_size);
-    ndt.setTransformationEpsilon(trans_eps);
-
+    new_ndt_instance.setMaximumIterations(iter);
+    new_ndt_instance.setResolution(ndt_res);
+    new_ndt_instance.setStepSize(step_size);
+    new_ndt_instance.setTransformationEpsilon(trans_eps);
+    pthread_mutex_lock(&mutex);
+    ndt = new_ndt_instance;
+    pthread_mutex_unlock(&mutex);
     map_loaded = 1;
   }
 }
 
-static void gnss_callback(const geometry_msgs::PoseStamped::ConstPtr& input)
+static void gnss_callback(const geometry_msgs::PoseStamped::ConstPtr &input)
 {
   tf::Quaternion gnss_q(input->pose.orientation.x, input->pose.orientation.y, input->pose.orientation.z,
                         input->pose.orientation.w);
@@ -358,7 +375,7 @@ static void gnss_callback(const geometry_msgs::PoseStamped::ConstPtr& input)
   previous_gnss_pose.yaw = current_gnss_pose.yaw;
 }
 
-static void initialpose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& input)
+static void initialpose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr &input)
 {
   tf::TransformListener listener;
   tf::StampedTransform transform;
@@ -368,7 +385,7 @@ static void initialpose_callback(const geometry_msgs::PoseWithCovarianceStamped:
     listener.waitForTransform("/map", "/world", now, ros::Duration(10.0));
     listener.lookupTransform("/map", "world", now, transform);
   }
-  catch (tf::TransformException& ex)
+  catch (tf::TransformException &ex)
   {
     ROS_ERROR("%s", ex.what());
   }
@@ -395,7 +412,7 @@ static void initialpose_callback(const geometry_msgs::PoseWithCovarianceStamped:
   {
     double min_distance = DBL_MAX;
     double nearest_z = current_pose.z;
-    for (const auto& p : map)
+    for (const auto &p : map)
     {
       double distance = hypot(current_pose.x - p.x, current_pose.y - p.y);
       if (distance < min_distance)
@@ -420,7 +437,7 @@ static void initialpose_callback(const geometry_msgs::PoseWithCovarianceStamped:
   offset_yaw = 0.0;
 }
 
-static void points_callback(const sensor_msgs::PointCloud2::ConstPtr& input)
+static void points_callback(const sensor_msgs::PointCloud2::ConstPtr &input)
 {
   if (map_loaded == 1 && init_pos_set == 1)
   {
@@ -447,6 +464,7 @@ static void points_callback(const sensor_msgs::PointCloud2::ConstPtr& input)
     static double align_time, getFitnessScore_time = 0.0;
 
     // Setting point cloud to be aligned.
+    pthread_mutex_lock(&mutex);
     ndt.setInputSource(filtered_scan_ptr);
 
     // Guess the initial gross estimation of the transformation
@@ -507,7 +525,7 @@ static void points_callback(const sensor_msgs::PointCloud2::ConstPtr& input)
         1000.0;
 
     trans_probability = ndt.getTransformationProbability();
-
+    pthread_mutex_unlock(&mutex);
     tf::Matrix3x3 mat_l;  // localizer
     mat_l.setValue(static_cast<double>(t(0, 0)), static_cast<double>(t(0, 1)), static_cast<double>(t(0, 2)),
                    static_cast<double>(t(1, 0)), static_cast<double>(t(1, 1)), static_cast<double>(t(1, 2)),
@@ -704,7 +722,8 @@ static void points_callback(const sensor_msgs::PointCloud2::ConstPtr& input)
     // Send TF "/base_link" to "/map"
     transform.setOrigin(tf::Vector3(current_pose.x, current_pose.y, current_pose.z));
     transform.setRotation(current_q);
-    //    br.sendTransform(tf::StampedTransform(transform, current_scan_time, "/map", "/base_link"));
+    //    br.sendTransform(tf::StampedTransform(transform, current_scan_time,
+    //    "/map", "/base_link"));
     if (_use_local_transform == true)
     {
       br.sendTransform(tf::StampedTransform(local_transform * transform, current_scan_time, "/map", "/base_link"));
@@ -775,7 +794,8 @@ static void points_callback(const sensor_msgs::PointCloud2::ConstPtr& input)
     std::cout << "Sequence: " << input->header.seq << std::endl;
     std::cout << "Timestamp: " << input->header.stamp << std::endl;
     std::cout << "Frame ID: " << input->header.frame_id << std::endl;
-    //		std::cout << "Number of Scan Points: " << scan_ptr->size() << " points." << std::endl;
+    //		std::cout << "Number of Scan Points: " << scan_ptr->size() << "
+    // points." << std::endl;
     std::cout << "Number of Filtered Scan Points: " << scan_points_num << " points." << std::endl;
     std::cout << "NDT has converged: " << ndt.hasConverged() << std::endl;
     std::cout << "Fitness Score: " << fitness_score << std::endl;
@@ -835,9 +855,24 @@ static void points_callback(const sensor_msgs::PointCloud2::ConstPtr& input)
   }
 }
 
-int main(int argc, char** argv)
+void *thread_map(void *args)
+{
+  ros::NodeHandle nh_map;
+  ros::CallbackQueue map_callback_queue;
+  nh_map.setCallbackQueue(&map_callback_queue);
+
+  ros::Subscriber map_sub = nh_map.subscribe("points_map", 10, map_callback);
+  while (nh_map.ok())
+  {
+    map_callback_queue.callAvailable(ros::WallDuration());
+  }
+}
+
+int main(int argc, char **argv)
 {
   ros::init(argc, argv, "ndt_matching");
+  pthread_mutex_init(&mutex, NULL);
+  //  ros::MultiThreadedSpinner spinner(4);
 
   ros::NodeHandle nh;
   ros::NodeHandle private_nh("~");
@@ -845,7 +880,7 @@ int main(int argc, char** argv)
   // Set log file name.
   char buffer[80];
   std::time_t now = std::time(NULL);
-  std::tm* pnow = std::localtime(&now);
+  std::tm *pnow = std::localtime(&now);
   std::strftime(buffer, 80, "%Y%m%d_%H%M%S", pnow);
   filename = "ndt_matching_" + std::string(buffer) + ".csv";
   ofs.open(filename.c_str(), std::ios::app);
@@ -931,7 +966,8 @@ int main(int argc, char** argv)
   // Publishers
   predict_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/predict_pose", 1000);
   ndt_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/ndt_pose", 1000);
-  // current_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/current_pose", 1000);
+  // current_pose_pub =
+  // nh.advertise<geometry_msgs::PoseStamped>("/current_pose", 1000);
   localizer_pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/localizer_pose", 1000);
   estimate_twist_pub = nh.advertise<geometry_msgs::TwistStamped>("/estimate_twist", 1000);
   estimated_vel_mps_pub = nh.advertise<std_msgs::Float32>("/estimated_vel_mps", 1000);
@@ -942,13 +978,18 @@ int main(int argc, char** argv)
   ndt_reliability_pub = nh.advertise<std_msgs::Float32>("/ndt_reliability", 1000);
 
   // Subscribers
+  //  ros::Subscriber map_sub = nh.subscribe("points_map", 10, map_callback);
+
   ros::Subscriber param_sub = nh.subscribe("config/ndt", 10, param_callback);
   ros::Subscriber gnss_sub = nh.subscribe("gnss_pose", 10, gnss_callback);
-  ros::Subscriber map_sub = nh.subscribe("points_map", 10, map_callback);
   ros::Subscriber initialpose_sub = nh.subscribe("initialpose", 1000, initialpose_callback);
   ros::Subscriber points_sub = nh.subscribe("filtered_points", _queue_size, points_callback);
 
+  pthread_t th1;
+  pthread_create(&th1, NULL, thread_map, NULL);
+
   ros::spin();
+  //  spinner.spin();
 
   return 0;
 }
