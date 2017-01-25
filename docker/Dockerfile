@@ -1,4 +1,4 @@
-FROM nvidia/cuda:8.0-ubuntu14.04
+FROM nvidia/cuda:8.0-cudnn5-devel-ubuntu14.04
 MAINTAINER Yuki Iida <aiueo.0409@gmail.com>
 
 RUN apt-get update && apt-get install -y \
@@ -27,7 +27,8 @@ RUN apt-get install -y \
         libflann-dev \
         libgsl0-dev \
         libgoogle-perftools-dev \
-        libeigen3-dev
+        libeigen3-dev \
+        libglew-dev
 
 # Intall some basic GUI and sound libs
 RUN apt-get install -y \
@@ -43,19 +44,60 @@ RUN apt-get install -y \
         cmake-qt-gui \
         gnome-terminal
 
+# GCC 4.9
+RUN add-apt-repository ppa:ubuntu-toolchain-r/test
+RUN apt-get update
+RUN apt-get install -y gcc-4.9 g++-4.9 cpp-4.9 gcc-4.9-multilib g++-4.9-multilib
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.9 10
+RUN update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-4.9 10
+
+RUN add-apt-repository ppa:v-launchpad-jochen-sprickerhof-de/pcl
+RUN apt-get update
+RUN apt-get upgrade -y
+
 # Install OpenCV
 RUN apt-get update && apt-get -y install libopencv-dev build-essential cmake git libgtk2.0-dev pkg-config python-dev python-numpy libdc1394-22 libdc1394-22-dev libjpeg-dev libpng12-0 libjasper-dev libavcodec-dev libavformat-dev libswscale-dev libgstreamer0.10-dev libgstreamer-plugins-base0.10-dev libv4l-dev libtbb-dev libqt4-dev libmp3lame-dev libopencore-amrnb-dev libopencore-amrwb-dev libtheora-dev libvorbis-dev libxvidcore-dev x264 v4l-utils unzip
 
-RUN wget https://github.com/opencv/opencv/archive/2.4.13.zip && \
-    unzip 2.4.13.zip && \
-    rm 2.4.13.zip && \
-    cd opencv-2.4.13/ && \
+RUN curl -L https://github.com/opencv/opencv/archive/2.4.13.2.tar.gz | tar xz && \
+    cd opencv-2.4.13.2 && \
     mkdir build && \
     cd build/ && \
-    cmake -D WITH_TBB=ON -D BUILD_NEW_PYTHON_SUPPORT=ON -D WITH_V4L=ON -D CUDA_GENERATION=Auto -D WITH_QT=ON -D WITH_OPENGL=ON -D WITH_VTK=ON .. && \
+    cmake -D WITH_TBB=ON -D BUILD_NEW_PYTHON_SUPPORT=ON -D WITH_V4L=ON -D CUDA_GENERATION=Auto -D WITH_CUBLAS=1 -D WITH_QT=ON -D WITH_OPENGL=ON -D WITH_VTK=ON .. && \
     make -j8 && \
     make install 
 ENV PKG_CONFIG_PATH $PKG_CONFIG_PATH:/usr/local/lib/pkgconfig
+
+
+# Install Caffe ssd
+RUN apt-get install -y \
+        cython \
+        libatlas-base-dev \
+        libgflags-dev \
+        libgoogle-glog-dev \
+        libhdf5-serial-dev \
+        liblapack-dev \
+        liblapack3 \
+        libleveldb-dev \
+        liblmdb-dev \
+        libopenblas-base \
+        libopenblas-dev \
+        libopencv-dev \
+        libprotobuf-dev \
+        libsnappy-dev \
+        protobuf-compiler \
+        python-pip \
+        python-skimage         
+
+RUN pip install protobuf
+RUN git clone https://github.com/weiliu89/caffe.git ssdcaffe && \
+        cd ssdcaffe && \
+        git checkout ssd && \
+        cp Makefile.config.example Makefile.config && \
+        echo "USE_CUDNN := 1" >> Makefile.config && \
+        make -j8 && \
+        make -j8 py && \
+        make test -j8 && \
+        make distribute
 
 # Add basic user
 ENV USERNAME autoware
@@ -72,6 +114,8 @@ RUN useradd -m $USERNAME && \
 
 # Setup .bashrc for ROS
 RUN echo "source /opt/ros/indigo/setup.bash" >> /home/$USERNAME/.bashrc && \
+        # python for caffe
+        echo "export PYTHONPATH=~/ssdcaffe/python:$PYTHONPATH" >> ~/.bashrc \
         #Fix for qt and X server errors
         echo "export QT_X11_NO_MITSHM=1" >> /home/$USERNAME/.bashrc && \
         # cd to home on login
@@ -82,7 +126,7 @@ USER autoware
 
 # Install Autoware
 RUN git clone https://github.com/CPFL/Autoware.git /home/$USERNAME/Autoware
-RUN /bin/bash -c 'source /opt/ros/indigo/setup.bash; cd /home/$USERNAME/Autoware/ros/src; catkin_init_workspace; cd ../; ./catkin_make_release'
+RUN /bin/bash -c 'source /opt/ros/indigo/setup.bash; cd /home/$USERNAME/Autoware/ros/src;catkin_init_workspace; cd ../;LIBRARY_PATH=/usr/lib/OpenNI2/Drivers:$LIBRARY_PATH ./catkin_make_release'
 RUN echo "source /home/$USERNAME/Autoware/ros/devel/setup.bash" >> /home/$USERNAME/.bashrc
 
 # Change Terminal Color
